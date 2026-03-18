@@ -1018,27 +1018,50 @@ function loadState() {
 }
 
 export default function Dashboard() {
-  const saved = useMemo(() => loadState(), []);
-  const [cagnottes, setCagnottes] = useState<Cagnotte[]>(saved?.cagnottes ?? DEFAULT_CAGNOTTES);
-  const [years, setYears] = useState(saved?.years ?? 20);
-  const [nextId, setNextId] = useState(saved?.nextId ?? 10);
+  const [loaded, setLoaded] = useState(false);
+  const [cagnottes, setCagnottes] = useState<Cagnotte[]>(DEFAULT_CAGNOTTES);
+  const [years, setYears] = useState(20);
+  const [nextId, setNextId] = useState(10);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
-  const [dark, setDark] = useState(saved?.dark ?? false);
+  const [dark, setDark] = useState(false);
   const [activeChart, setActiveChart] = useState<"projection" | "mensuel">("projection");
-  const [fireTarget, setFireTarget] = useState<number>(saved?.fireTarget ?? 3000);
-  const [fireRate, setFireRate] = useState<number>(saved?.fireRate ?? 4);
+  const [fireTarget, setFireTarget] = useState<number>(3000);
+  const [fireRate, setFireRate] = useState<number>(4);
   const dragSrcRef = useRef<number | null>(null);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
-  // Persist to localStorage on every change
+  // Load from Supabase on mount
   useEffect(() => {
-    try {
-      localStorage.setItem("patrimoine-v1", JSON.stringify({ cagnottes, years, nextId, dark, fireTarget, fireRate }));
-    } catch {}
-  }, [cagnottes, years, nextId, dark, fireTarget, fireRate]);
+    async function load() {
+      try {
+        const res = await fetch("/api/data");
+        const { data } = await res.json();
+        if (data) {
+          if (data.cagnottes) setCagnottes(data.cagnottes);
+          if (data.years) setYears(data.years);
+          if (data.nextId) setNextId(data.nextId);
+          if (typeof data.dark === "boolean") setDark(data.dark);
+          if (data.fireTarget) setFireTarget(data.fireTarget);
+          if (data.fireRate) setFireRate(data.fireRate);
+        }
+      } catch {}
+      setLoaded(true);
+    }
+    load();
+  }, []);
+
+  // Persist to Supabase on every change
+  useEffect(() => {
+    if (!loaded) return;
+    fetch("/api/data", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cagnottes, years, nextId, dark, fireTarget, fireRate }),
+    }).catch(() => {});
+  }, [cagnottes, years, nextId, dark, fireTarget, fireRate, loaded]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);

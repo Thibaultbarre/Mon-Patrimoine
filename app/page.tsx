@@ -2,7 +2,8 @@
 
 import { useState, useMemo, useEffect, useRef } from "react";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
-import { PlusCircle, Trash2, Sun, Moon, ChevronDown, RefreshCw, GripVertical, Flame, Target } from "lucide-react";
+import { PlusCircle, Trash2, Sun, Moon, ChevronDown, RefreshCw, GripVertical, Flame, Target, LogOut } from "lucide-react";
+import { useClerk } from "@clerk/nextjs";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -915,6 +916,15 @@ function CagnotteDialog({ cagnotte, color, canDelete, open, onOpenChange, onSave
   );
 }
 
+function LogoutButton() {
+  const { signOut } = useClerk();
+  return (
+    <Button variant="outline" size="icon" onClick={() => signOut({ redirectUrl: "/sign-in" })} aria-label="Se déconnecter">
+      <LogOut className="h-4 w-4" />
+    </Button>
+  );
+}
+
 interface FireResult { capital: number; monthsLeft: number | null; date: string | null; already: boolean; }
 
 function FireCard({ fireResult, fireTarget, onFireTargetChange, fireRate, onFireRateChange, totalNow }: {
@@ -1167,9 +1177,12 @@ export default function Dashboard() {
           <div className="flex flex-col gap-1">
             <h1 className="text-3xl font-bold tracking-tight">Mon Patrimoine</h1>
           </div>
-          <Button variant="outline" size="icon" onClick={() => setDark((d) => !d)} aria-label="Changer le thème">
-            {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="icon" onClick={() => setDark((d) => !d)} aria-label="Changer le thème">
+              {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </Button>
+            <LogoutButton />
+          </div>
         </div>
 
         {/* Main layout */}

@@ -178,14 +178,21 @@ function projectImmobilier(apport: number, prixBien: number, tauxPret: number, t
   return pts;
 }
 
-function projectCagnotte(c: Cagnotte, years: number): number[] {
+function projectCagnotte(
+  c: Cagnotte,
+  years: number,
+  opts?: { noInterest?: boolean; noSavings?: boolean }
+): number[] {
+  const taux = opts?.noInterest ? 0 : c.taux;
+  const mensuel = opts?.noSavings ? 0 : c.mensuel;
+  const schedule = opts?.noSavings ? [] : (c.mensuelSchedule ?? []);
   if (c.type === "immobilier" && c.prixBien !== undefined && c.tauxPret !== undefined && c.dureePret !== undefined) {
-    return projectImmobilier(c.montant, c.prixBien, c.tauxPret, c.taux, c.dureePret, years);
+    return projectImmobilier(c.montant, c.prixBien, c.tauxPret, taux, c.dureePret, years);
   }
-  if (c.mensuelSchedule?.length) {
-    return projectMonthlyWithSchedule(c.montant, c.mensuel, c.mensuelSchedule, c.taux, years);
+  if (schedule.length) {
+    return projectMonthlyWithSchedule(c.montant, mensuel, schedule, taux, years);
   }
-  return projectMonthly(c.montant, c.mensuel, c.taux, years);
+  return projectMonthly(c.montant, mensuel, taux, years);
 }
 
 function fmt(n: number): string {
@@ -1027,6 +1034,8 @@ export default function Dashboard() {
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [dark, setDark] = useState(false);
   const [activeChart, setActiveChart] = useState<"projection" | "mensuel">("projection");
+  const [enableInterest, setEnableInterest] = useState(true);
+  const [enableSavings, setEnableSavings] = useState(true);
   const [fireTarget, setFireTarget] = useState<number>(3000);
   const [fireRate, setFireRate] = useState<number>(4);
   const dragSrcRef = useRef<number | null>(null);
@@ -1046,6 +1055,8 @@ export default function Dashboard() {
           if (typeof data.dark === "boolean") setDark(data.dark);
           if (data.fireTarget) setFireTarget(data.fireTarget);
           if (data.fireRate) setFireRate(data.fireRate);
+          if (typeof data.enableInterest === "boolean") setEnableInterest(data.enableInterest);
+          if (typeof data.enableSavings === "boolean") setEnableSavings(data.enableSavings);
         }
       } catch {}
       setLoaded(true);
@@ -1059,18 +1070,19 @@ export default function Dashboard() {
     fetch("/api/data", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cagnottes, years, nextId, dark, fireTarget, fireRate }),
+      body: JSON.stringify({ cagnottes, years, nextId, dark, fireTarget, fireRate, enableInterest, enableSavings }),
     }).catch(() => {});
-  }, [cagnottes, years, nextId, dark, fireTarget, fireRate, loaded]);
+  }, [cagnottes, years, nextId, dark, fireTarget, fireRate, enableInterest, enableSavings, loaded]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);
 
-  // Auto-refresh crypto prices every 60s
+  // Auto-refresh crypto prices: once data is loaded, then every 60s
   const cagnottesRef = useRef(cagnottes);
   useEffect(() => { cagnottesRef.current = cagnottes; }, [cagnottes]);
   useEffect(() => {
+    if (!loaded) return;
     async function refreshCrypto() {
       const current = cagnottesRef.current;
       const cryptos = current.filter((c) => c.type === "crypto" && c.holdings?.length);
@@ -1093,7 +1105,7 @@ export default function Dashboard() {
     refreshCrypto();
     const id = setInterval(refreshCrypto, 60_000);
     return () => clearInterval(id);
-  }, []);
+  }, [loaded]);
 
   const currentYear = new Date().getFullYear();
   const currentMonth = new Date().getMonth(); // 0-indexed
@@ -1104,10 +1116,11 @@ export default function Dashboard() {
 
   const chartData = useMemo(() => {
     const totalMonths = years * 12;
+    const projOpts = { noInterest: !enableInterest, noSavings: !enableSavings };
     const allPoints = Array.from({ length: totalMonths + 1 }, (_, m) => {
       const row: Record<string, number | string> = { month: monthLabel(m, currentYear, currentMonth) };
       visibleCagnottes.forEach((c) => {
-        const pts = projectCagnotte(c, years);
+        const pts = projectCagnotte(c, years, projOpts);
         row[c.name] = Math.round(pts[m] ?? 0);
       });
       return row;
@@ -1116,7 +1129,7 @@ export default function Dashboard() {
     if (allPoints.length <= maxBars) return allPoints;
     const step = Math.ceil(allPoints.length / maxBars);
     return allPoints.filter((_, i) => i % step === 0 || i === allPoints.length - 1);
-  }, [cagnottes, years, currentYear, currentMonth]);
+  }, [cagnottes, years, currentYear, currentMonth, enableInterest, enableSavings]);
 
   const mensuelCagnottes = visibleCagnottes.filter((c) => c.type !== "immobilier");
 
@@ -1275,7 +1288,7 @@ export default function Dashboard() {
 
           {/* Right: Chart */}
           <Card className="flex flex-col h-full">
-            <CardHeader className="pb-2">
+            <CardHeader>
               <div className="flex items-start justify-between gap-2 flex-wrap">
                 <div>
                   <div className="flex items-center gap-1.5 text-sm text-muted-foreground mb-1">
@@ -1301,6 +1314,32 @@ export default function Dashboard() {
                   ))}
                 </div>
               </div>
+              {activeChart === "projection" && (
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-3 text-xs">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <button
+                      type="button"
+                      onClick={() => setEnableInterest((v) => !v)}
+                      className={`flex items-center flex-shrink-0 w-9 h-5 rounded-full p-0.5 transition-colors duration-200 ${enableInterest ? "bg-green-400" : "bg-border"}`}
+                      aria-label="Activer les intérêts composés"
+                    >
+                      <span className={`h-4 w-4 rounded-full bg-white dark:bg-black shadow-sm transition-transform duration-200 ${enableInterest ? "translate-x-[16px]" : "translate-x-0"}`} />
+                    </button>
+                    <span className={enableInterest ? "text-foreground" : "text-muted-foreground"}>Intérêts composés</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <button
+                      type="button"
+                      onClick={() => setEnableSavings((v) => !v)}
+                      className={`flex items-center flex-shrink-0 w-9 h-5 rounded-full p-0.5 transition-colors duration-200 ${enableSavings ? "bg-green-400" : "bg-border"}`}
+                      aria-label="Activer l'épargne mensuelle"
+                    >
+                      <span className={`h-4 w-4 rounded-full bg-white dark:bg-black shadow-sm transition-transform duration-200 ${enableSavings ? "translate-x-[16px]" : "translate-x-0"}`} />
+                    </button>
+                    <span className={enableSavings ? "text-foreground" : "text-muted-foreground"}>Épargne mensuelle</span>
+                  </label>
+                </div>
+              )}
             </CardHeader>
             <CardContent className="flex-1 pb-4 min-h-0">
               <ResponsiveContainer width="100%" height="100%" minHeight={320}>

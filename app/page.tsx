@@ -59,7 +59,7 @@ const PRESET_COLORS = [
 function getColor(c: { color?: string }, idx: number): string {
   return c.color ?? PALETTE[idx % PALETTE.length];
 }
-const YEAR_OPTIONS = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30];
+const YEAR_OPTIONS = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 40];
 const MONTHS_FR = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
 
 const TAUX_PRESETS = {

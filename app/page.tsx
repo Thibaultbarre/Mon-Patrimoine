@@ -26,6 +26,12 @@ interface MensuelSchedule {
   label?: string;
 }
 
+interface Apport {
+  date: string;   // "YYYY-MM"
+  montant: number;
+  label?: string;
+}
+
 interface Cagnotte {
   id: number;
   name: string;
@@ -39,6 +45,7 @@ interface Cagnotte {
   dureePret?: number;
   holdings?: CryptoHolding[];
   mensuelSchedule?: MensuelSchedule[];
+  apports?: Apport[];
   color?: string;
 }
 
@@ -138,7 +145,12 @@ function addMonths(baseYear: number, baseMonth: number, n: number): string {
 }
 
 function projectMonthlyWithSchedule(
-  montant: number, mensuelBase: number, schedule: MensuelSchedule[], taux: number, years: number
+  montant: number,
+  mensuelBase: number,
+  schedule: MensuelSchedule[],
+  taux: number,
+  years: number,
+  apports: Apport[] = []
 ): number[] {
   const monthly = taux / 100 / 12;
   const now = new Date();
@@ -151,7 +163,9 @@ function projectMonthlyWithSchedule(
     const ym = addMonths(baseYear, baseMonth, m);
     let mensuel = mensuelBase;
     for (const s of sorted) { if (s.date <= ym) mensuel = s.montant; }
-    val = val * (1 + monthly) + mensuel;
+    let apportMonth = 0;
+    for (const a of apports) { if (a.date === ym) apportMonth += a.montant; }
+    val = val * (1 + monthly) + mensuel + apportMonth;
     pts.push(val);
   }
   return pts;
@@ -186,11 +200,12 @@ function projectCagnotte(
   const taux = opts?.noInterest ? 0 : c.taux;
   const mensuel = opts?.noSavings ? 0 : c.mensuel;
   const schedule = opts?.noSavings ? [] : (c.mensuelSchedule ?? []);
+  const apports = c.apports ?? [];
   if (c.type === "immobilier" && c.prixBien !== undefined && c.tauxPret !== undefined && c.dureePret !== undefined) {
     return projectImmobilier(c.montant, c.prixBien, c.tauxPret, taux, c.dureePret, years);
   }
-  if (schedule.length) {
-    return projectMonthlyWithSchedule(c.montant, mensuel, schedule, taux, years);
+  if (schedule.length || apports.length) {
+    return projectMonthlyWithSchedule(c.montant, mensuel, schedule, taux, years, apports);
   }
   return projectMonthly(c.montant, mensuel, taux, years);
 }
@@ -471,17 +486,101 @@ function ScheduleField({
   );
 }
 
+function ApportsField({
+  apports, onChange,
+}: {
+  apports: Apport[];
+  onChange: (a: Apport[]) => void;
+}) {
+  const today = new Date();
+  const minYear = today.getFullYear();
+
+  function add() {
+    const lastDate = apports.length
+      ? apports[apports.length - 1].date
+      : `${minYear}-${String(today.getMonth() + 1).padStart(2, "0")}`;
+    onChange([...apports, { date: lastDate, montant: 0, label: "" }]);
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {apports.length === 0 ? (
+        <p className="text-xs text-muted-foreground">Aucun apport ponctuel programmé.</p>
+      ) : (
+        [...apports]
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .map((a, i) => {
+            const origIdx = apports.indexOf(a);
+            const [yearStr, monthStr] = a.date.split("-");
+            const year = parseInt(yearStr);
+            const month = monthStr;
+            return (
+              <div key={i} className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={a.label ?? ""}
+                  onChange={(e) => onChange(apports.map((x, ii) => ii === origIdx ? { ...x, label: e.target.value } : x))}
+                  placeholder="Ex. Prime, Héritage…"
+                  className="rounded-md border bg-background px-2 py-1.5 text-sm flex-1 min-w-0 text-foreground placeholder:text-muted-foreground"
+                />
+                <select
+                  value={month}
+                  onChange={(e) => onChange(apports.map((x, ii) => ii === origIdx ? { ...x, date: `${yearStr}-${e.target.value}` } : x))}
+                  className="rounded-md border bg-background px-2 py-1.5 text-sm text-foreground flex-shrink-0"
+                >
+                  {MONTHS_SHORT_FR.map((m, idx) => (
+                    <option key={idx} value={String(idx + 1).padStart(2, "0")}>{m}</option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  value={year}
+                  min={minYear}
+                  max={minYear + 50}
+                  onChange={(e) => onChange(apports.map((x, ii) => ii === origIdx ? { ...x, date: `${e.target.value}-${month}` } : x))}
+                  className="rounded-md border bg-background px-2 py-1.5 text-sm w-16 text-foreground"
+                />
+                <div className="relative flex-shrink-0">
+                  <NumberInput
+                    value={a.montant}
+                    min={0}
+                    onChange={(v) => onChange(apports.map((x, ii) => ii === origIdx ? { ...x, montant: v } : x))}
+                    placeholder="0"
+                    className="w-28 pr-7"
+                  />
+                  <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">€</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onChange(apports.filter((_, ii) => ii !== origIdx))}
+                  className="p-1.5 rounded-md text-muted-foreground transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/40 dark:hover:text-red-400 flex-shrink-0"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            );
+          })
+      )}
+      <button type="button" onClick={add} className="text-xs text-primary hover:underline">
+        + Ajouter un apport ponctuel
+      </button>
+    </div>
+  );
+}
+
 function CryptoForm({
-  holdings, taux, mensuel, mensuelSchedule, onHoldingsChange, onTauxChange, onMensuelChange, onScheduleChange,
+  holdings, taux, mensuel, mensuelSchedule, apports, onHoldingsChange, onTauxChange, onMensuelChange, onScheduleChange, onApportsChange,
 }: {
   holdings: CryptoHolding[];
   taux: number;
   mensuel: number;
   mensuelSchedule: MensuelSchedule[];
+  apports: Apport[];
   onHoldingsChange: (h: CryptoHolding[]) => void;
   onTauxChange: (t: number) => void;
   onMensuelChange: (v: number) => void;
   onScheduleChange: (s: MensuelSchedule[]) => void;
+  onApportsChange: (a: Apport[]) => void;
 }) {
   const [loading, setLoading] = useState(false);
 
@@ -601,6 +700,11 @@ function CryptoForm({
         <Label className="text-sm font-medium">Évolution du versement mensuel</Label>
         <ScheduleField schedule={mensuelSchedule} mensuelBase={mensuel} onChange={onScheduleChange} />
       </div>
+
+      <div className="space-y-2 border-t pt-3">
+        <Label className="text-sm font-medium">Apports ponctuels</Label>
+        <ApportsField apports={apports} onChange={onApportsChange} />
+      </div>
     </div>
   );
 }
@@ -610,6 +714,7 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
   const [draft, setDraft] = useState({ name: "", montant: 0, mensuel: 0, taux: 5, prixBien: 300000, tauxPret: 3.5, dureePret: 20 });
   const [holdings, setHoldings] = useState<CryptoHolding[]>([]);
   const [schedules, setSchedules] = useState<MensuelSchedule[]>([]);
+  const [apports, setApports] = useState<Apport[]>([]);
 
   useMemo(() => {
     if (open) {
@@ -617,6 +722,7 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
       setDraft({ name: "", montant: 0, mensuel: 0, taux: 5, prixBien: 300000, tauxPret: 3.5, dureePret: 20 });
       setHoldings([]);
       setSchedules([]);
+      setApports([]);
     }
   }, [open]);
 
@@ -632,8 +738,9 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
 
   function handleSave() {
     const sched = schedules.length ? schedules : undefined;
+    const aps = apports.length ? apports : undefined;
     if (type === "epargne") {
-      onAdd({ name: draft.name || "Nouveau placement", montant: draft.montant, mensuel: draft.mensuel, taux: draft.taux, mensuelSchedule: sched });
+      onAdd({ name: draft.name || "Nouveau placement", montant: draft.montant, mensuel: draft.mensuel, taux: draft.taux, mensuelSchedule: sched, apports: aps });
     } else if (type === "immobilier") {
       const mensuel = computeMensualite(draft.prixBien - draft.montant, draft.tauxPret, draft.dureePret);
       onAdd({
@@ -645,7 +752,7 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
       onAdd({
         name: draft.name || "Crypto", type: "crypto",
         montant: totalCrypto, mensuel: draft.mensuel, taux: draft.taux,
-        holdings, mensuelSchedule: sched,
+        holdings, mensuelSchedule: sched, apports: aps,
       });
     }
     onOpenChange(false);
@@ -743,6 +850,10 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
                 <Label className="text-sm font-medium">Évolution du versement mensuel</Label>
                 <ScheduleField schedule={schedules} mensuelBase={draft.mensuel} onChange={setSchedules} />
               </div>
+              <div className="space-y-2 border-t pt-3">
+                <Label className="text-sm font-medium">Apports ponctuels</Label>
+                <ApportsField apports={apports} onChange={setApports} />
+              </div>
             </>
           )}
 
@@ -752,10 +863,12 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
               taux={draft.taux}
               mensuel={draft.mensuel}
               mensuelSchedule={schedules}
+              apports={apports}
               onHoldingsChange={setHoldings}
               onTauxChange={(t) => setDraft((prev) => ({ ...prev, taux: t }))}
               onMensuelChange={(v) => setDraft((prev) => ({ ...prev, mensuel: v }))}
               onScheduleChange={setSchedules}
+              onApportsChange={setApports}
             />
           )}
         </div>
@@ -856,6 +969,7 @@ function CagnotteDialog({ cagnotte, color, canDelete, open, onOpenChange, onSave
               taux={draft.taux}
               mensuel={draft.mensuel}
               mensuelSchedule={draft.mensuelSchedule ?? []}
+              apports={draft.apports ?? []}
               onHoldingsChange={(h) => {
                 const total = h.reduce((s, x) => s + x.quantity * (x.price ?? 0), 0);
                 setDraft((prev) => prev ? { ...prev, holdings: h, montant: total > 0 ? total : prev.montant } : prev);
@@ -863,6 +977,7 @@ function CagnotteDialog({ cagnotte, color, canDelete, open, onOpenChange, onSave
               onTauxChange={(t) => setDraft((prev) => prev ? { ...prev, taux: t } : prev)}
               onMensuelChange={(v) => setDraft((prev) => prev ? { ...prev, mensuel: v } : prev)}
               onScheduleChange={(s) => setDraft((prev) => prev ? { ...prev, mensuelSchedule: s } : prev)}
+              onApportsChange={(a) => setDraft((prev) => prev ? { ...prev, apports: a } : prev)}
             />
           )}
 
@@ -890,6 +1005,13 @@ function CagnotteDialog({ cagnotte, color, canDelete, open, onOpenChange, onSave
                   schedule={draft.mensuelSchedule ?? []}
                   mensuelBase={draft.mensuel}
                   onChange={(s) => setDraft((p) => p ? { ...p, mensuelSchedule: s } : p)}
+                />
+              </div>
+              <div className="space-y-2 border-t pt-3">
+                <Label className="text-sm font-medium">Apports ponctuels</Label>
+                <ApportsField
+                  apports={draft.apports ?? []}
+                  onChange={(a) => setDraft((p) => p ? { ...p, apports: a } : p)}
                 />
               </div>
             </>
@@ -1173,7 +1295,7 @@ export default function Dashboard() {
       const ym = addMonths(currentYear, currentMonth, m);
       let total = 0;
       visibleCagnottes.forEach((c) => {
-        const pts = projectMonthlyWithSchedule(c.montant, c.mensuel, c.mensuelSchedule ?? [], c.taux, Math.ceil(m / 12) + 1);
+        const pts = projectMonthlyWithSchedule(c.montant, c.mensuel, c.mensuelSchedule ?? [], c.taux, Math.ceil(m / 12) + 1, c.apports ?? []);
         total += pts[m] ?? pts[pts.length - 1];
       });
       if (total >= fireCapital) {

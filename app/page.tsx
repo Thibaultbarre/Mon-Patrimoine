@@ -44,6 +44,8 @@ interface Cagnotte {
   tauxPret?: number;
   dureePret?: number;
   dateAchat?: string; // "YYYY-MM", date réelle d'achat du bien
+  pauseDebut?: string; // "YYYY-MM", début d'une pause de remboursement
+  pauseFin?: string;   // "YYYY-MM", reprise des mensualités
   holdings?: CryptoHolding[];
   mensuelSchedule?: MensuelSchedule[];
   apports?: Apport[];
@@ -186,29 +188,68 @@ function currentYM(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-// Équité (valeur du bien - capital restant dû) au mois "absoluteMonth" depuis l'achat
-function immoEquiteAt(prixBien: number, capitalEmprunte: number, tauxPret: number, tauxAppre: number, dureePret: number, absoluteMonth: number): number {
+// Nombre de mois entre deux dates "YYYY-MM" (peut être négatif)
+function monthsBetween(fromDateStr: string, toDateStr: string): number {
+  const [fy, fm] = fromDateStr.split("-").map(Number);
+  const [ty, tm] = toDateStr.split("-").map(Number);
+  return (ty - fy) * 12 + (tm - fm);
+}
+
+// Bornes de la pause de prêt en mois depuis l'achat (null si pas de pause définie)
+function immoPauseMonths(c: { dateAchat?: string; pauseDebut?: string; pauseFin?: string }): [number | null, number | null] {
+  if (!c.pauseDebut || !c.pauseFin) return [null, null];
+  const dateAchatEff = c.dateAchat ?? currentYM();
+  return [monthsBetween(dateAchatEff, c.pauseDebut), monthsBetween(dateAchatEff, c.pauseFin)];
+}
+
+// Capital restant dû mois par mois. Pendant une pause [pauseStartMonth, pauseEndMonth[, aucune mensualité
+// n'est payée : les intérêts s'accumulent sur le capital restant. À la reprise, la mensualité est recalculée
+// pour amortir le nouveau solde sur la durée restante d'origine (le prêt est donc rallongé exactement de la
+// durée de la pause, avec une mensualité légèrement plus élevée) — ce qui correspond à la pratique bancaire
+// courante des pauses/modulations d'échéances.
+function capitalRestantSchedule(capitalEmprunte: number, tauxPret: number, dureePretMois: number, pauseStartMonth: number | null, pauseEndMonth: number | null, maxMonth: number): number[] {
   const r = tauxPret / 100 / 12;
-  const n = dureePret * 12;
-  const ra = tauxAppre / 100 / 12;
-  const valeurBien = prixBien * Math.pow(1 + ra, absoluteMonth);
-  let capitalRestant: number;
-  if (absoluteMonth >= n) {
-    capitalRestant = 0;
-  } else if (r > 0) {
-    capitalRestant = capitalEmprunte * (Math.pow(1 + r, n) - Math.pow(1 + r, absoluteMonth)) / (Math.pow(1 + r, n) - 1);
-  } else {
-    capitalRestant = capitalEmprunte - (capitalEmprunte / n) * absoluteMonth;
+  let mensualite = computeMensualite(capitalEmprunte, tauxPret, dureePretMois / 12);
+  const hasPause = pauseStartMonth !== null && pauseEndMonth !== null && pauseEndMonth > pauseStartMonth;
+  const balances: number[] = [capitalEmprunte];
+  let balance = capitalEmprunte;
+  let recalculated = false;
+  for (let m = 1; m <= maxMonth; m++) {
+    if (balance > 0) {
+      const interest = balance * r;
+      const inPause = hasPause && m >= pauseStartMonth! && m < pauseEndMonth!;
+      if (inPause) {
+        balance = balance + interest;
+      } else {
+        if (hasPause && !recalculated && m >= pauseEndMonth!) {
+          const remainingMonths = dureePretMois - pauseStartMonth!;
+          mensualite = computeMensualite(balance, tauxPret, remainingMonths / 12);
+          recalculated = true;
+        }
+        balance = balance + interest - mensualite;
+      }
+      if (balance < 0) balance = 0;
+    }
+    balances.push(balance);
   }
-  return Math.max(0, valeurBien - capitalRestant);
+  return balances;
 }
 
 // monthsElapsed: mois déjà écoulés depuis l'achat réel (dateAchat), pour partir de la bonne équité "aujourd'hui"
-function projectImmobilier(apport: number, prixBien: number, tauxPret: number, tauxAppre: number, dureePret: number, years: number, monthsElapsed: number = 0): number[] {
+function projectImmobilier(
+  apport: number, prixBien: number, tauxPret: number, tauxAppre: number, dureePret: number, years: number,
+  monthsElapsed: number = 0,
+  pauseStartMonth: number | null = null,
+  pauseEndMonth: number | null = null
+): number[] {
   const capital = prixBien - apport;
-  const pts: number[] = [immoEquiteAt(prixBien, capital, tauxPret, tauxAppre, dureePret, monthsElapsed)];
-  for (let m = 1; m <= years * 12; m++) {
-    pts.push(immoEquiteAt(prixBien, capital, tauxPret, tauxAppre, dureePret, monthsElapsed + m));
+  const maxMonth = monthsElapsed + years * 12;
+  const balances = capitalRestantSchedule(capital, tauxPret, dureePret * 12, pauseStartMonth, pauseEndMonth, maxMonth);
+  const ra = tauxAppre / 100 / 12;
+  const pts: number[] = [];
+  for (let m = monthsElapsed; m <= maxMonth; m++) {
+    const valeurBien = prixBien * Math.pow(1 + ra, m);
+    pts.push(Math.max(0, valeurBien - balances[m]));
   }
   return pts;
 }
@@ -223,7 +264,8 @@ function projectCagnotte(
   const schedule = opts?.noSavings ? [] : (c.mensuelSchedule ?? []);
   const apports = c.apports ?? [];
   if (c.type === "immobilier" && c.prixBien !== undefined && c.tauxPret !== undefined && c.dureePret !== undefined) {
-    return projectImmobilier(c.montant, c.prixBien, c.tauxPret, taux, c.dureePret, years, monthsSince(c.dateAchat));
+    const [pauseStart, pauseEnd] = immoPauseMonths(c);
+    return projectImmobilier(c.montant, c.prixBien, c.tauxPret, taux, c.dureePret, years, monthsSince(c.dateAchat), pauseStart, pauseEnd);
   }
   if (schedule.length || apports.length) {
     return projectMonthlyWithSchedule(c.montant, mensuel, schedule, taux, years, apports);
@@ -234,7 +276,8 @@ function projectCagnotte(
 // Valeur nette "aujourd'hui" d'une cagnotte (équité réelle pour l'immobilier, montant saisi sinon)
 function getCurrentValeur(c: Cagnotte): number {
   if (c.type === "immobilier" && c.prixBien !== undefined && c.tauxPret !== undefined && c.dureePret !== undefined) {
-    return projectImmobilier(c.montant, c.prixBien, c.tauxPret, c.taux, c.dureePret, 0, monthsSince(c.dateAchat))[0];
+    const [pauseStart, pauseEnd] = immoPauseMonths(c);
+    return projectImmobilier(c.montant, c.prixBien, c.tauxPret, c.taux, c.dureePret, 0, monthsSince(c.dateAchat), pauseStart, pauseEnd)[0];
   }
   return c.montant;
 }
@@ -740,7 +783,7 @@ function CryptoForm({
 
 function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
   const [type, setType] = useState<"epargne" | "immobilier" | "crypto">("epargne");
-  const [draft, setDraft] = useState({ name: "", montant: 0, mensuel: 0, taux: 5, prixBien: 300000, tauxPret: 3.5, dureePret: 20, dateAchat: currentYM() });
+  const [draft, setDraft] = useState({ name: "", montant: 0, mensuel: 0, taux: 5, prixBien: 300000, tauxPret: 3.5, dureePret: 20, dateAchat: currentYM(), pauseDebut: "", pauseFin: "" });
   const [holdings, setHoldings] = useState<CryptoHolding[]>([]);
   const [schedules, setSchedules] = useState<MensuelSchedule[]>([]);
   const [apports, setApports] = useState<Apport[]>([]);
@@ -748,7 +791,7 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
   useMemo(() => {
     if (open) {
       setType("epargne");
-      setDraft({ name: "", montant: 0, mensuel: 0, taux: 5, prixBien: 300000, tauxPret: 3.5, dureePret: 20, dateAchat: currentYM() });
+      setDraft({ name: "", montant: 0, mensuel: 0, taux: 5, prixBien: 300000, tauxPret: 3.5, dureePret: 20, dateAchat: currentYM(), pauseDebut: "", pauseFin: "" });
       setHoldings([]);
       setSchedules([]);
       setApports([]);
@@ -764,7 +807,10 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
     : null;
 
   const equiteActuelle = type === "immobilier"
-    ? projectImmobilier(draft.montant, draft.prixBien, draft.tauxPret, draft.taux, draft.dureePret, 0, monthsSince(draft.dateAchat))[0]
+    ? (() => {
+        const [pauseStart, pauseEnd] = immoPauseMonths(draft);
+        return projectImmobilier(draft.montant, draft.prixBien, draft.tauxPret, draft.taux, draft.dureePret, 0, monthsSince(draft.dateAchat), pauseStart, pauseEnd)[0];
+      })()
     : null;
 
   const totalCrypto = holdings.reduce((s, h) => s + h.quantity * (h.price ?? 0), 0);
@@ -781,6 +827,7 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
         montant: draft.montant, mensuel, taux: draft.taux,
         prixBien: draft.prixBien, tauxPret: draft.tauxPret, dureePret: draft.dureePret,
         dateAchat: draft.dateAchat,
+        pauseDebut: draft.pauseDebut || undefined, pauseFin: draft.pauseFin || undefined,
       });
     } else {
       onAdd({
@@ -857,6 +904,20 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
                 onChange={(v) => setDraft((p) => ({ ...p, taux: v }))}
                 presets={TAUX_PRESETS.immobilier}
               />
+              <div className="space-y-2 border-t pt-3">
+                <Label className="text-sm font-medium">Pause de remboursement (optionnel)</Label>
+                <p className="text-xs text-muted-foreground">Si vous avez suspendu les mensualités sur une période : les intérêts s'accumulent sur le capital restant pendant cette pause, ce qui rallonge le prêt.</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label>Début</Label>
+                    <Input type="month" value={draft.pauseDebut} onChange={(e) => setDraft((p) => ({ ...p, pauseDebut: e.target.value }))} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Fin (reprise)</Label>
+                    <Input type="month" value={draft.pauseFin} onChange={(e) => setDraft((p) => ({ ...p, pauseFin: e.target.value }))} />
+                  </div>
+                </div>
+              </div>
               {mensualiteCalc !== null && (
                 <div className="rounded-md bg-muted px-3 py-2 flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">Mensualité calculée</span>
@@ -951,7 +1012,10 @@ function CagnotteDialog({ cagnotte, color, canDelete, open, onOpenChange, onSave
     : null;
 
   const equiteActuelle = isImmo && draft.prixBien !== undefined && draft.tauxPret !== undefined && draft.dureePret !== undefined
-    ? projectImmobilier(draft.montant, draft.prixBien, draft.tauxPret, draft.taux, draft.dureePret, 0, monthsSince(draft.dateAchat))[0]
+    ? (() => {
+        const [pauseStart, pauseEnd] = immoPauseMonths(draft);
+        return projectImmobilier(draft.montant, draft.prixBien, draft.tauxPret, draft.taux, draft.dureePret, 0, monthsSince(draft.dateAchat), pauseStart, pauseEnd)[0];
+      })()
     : null;
 
   const dialogTitle = isImmo ? "Modifier le bien immobilier" : isCrypto ? "Modifier le portefeuille crypto" : "Modifier le placement";
@@ -1006,6 +1070,20 @@ function CagnotteDialog({ cagnotte, color, canDelete, open, onOpenChange, onSave
                 onChange={(v) => setDraft((p) => p ? { ...p, taux: v } : p)}
                 presets={TAUX_PRESETS.immobilier}
               />
+              <div className="space-y-2 border-t pt-3">
+                <Label className="text-sm font-medium">Pause de remboursement (optionnel)</Label>
+                <p className="text-xs text-muted-foreground">Si vous avez suspendu les mensualités sur une période : les intérêts s'accumulent sur le capital restant pendant cette pause, ce qui rallonge le prêt.</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <Label>Début</Label>
+                    <Input type="month" value={draft.pauseDebut ?? ""} onChange={(e) => setDraft((p) => p ? { ...p, pauseDebut: e.target.value } : p)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Fin (reprise)</Label>
+                    <Input type="month" value={draft.pauseFin ?? ""} onChange={(e) => setDraft((p) => p ? { ...p, pauseFin: e.target.value } : p)} />
+                  </div>
+                </div>
+              </div>
               {mensualiteCalc !== null && (
                 <div className="rounded-md bg-muted px-3 py-2 flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">Mensualité calculée</span>

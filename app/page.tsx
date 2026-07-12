@@ -43,6 +43,7 @@ interface Cagnotte {
   prixBien?: number;
   tauxPret?: number;
   dureePret?: number;
+  dateAchat?: string; // "YYYY-MM", date réelle d'achat du bien
   holdings?: CryptoHolding[];
   mensuelSchedule?: MensuelSchedule[];
   apports?: Apport[];
@@ -171,23 +172,43 @@ function projectMonthlyWithSchedule(
   return pts;
 }
 
-function projectImmobilier(apport: number, prixBien: number, tauxPret: number, tauxAppre: number, dureePret: number, years: number): number[] {
-  const capital = prixBien - apport;
+// Nombre de mois écoulés depuis une date "YYYY-MM" (0 si pas de date ou date future)
+function monthsSince(dateStr?: string): number {
+  if (!dateStr) return 0;
+  const [y, mo] = dateStr.split("-").map(Number);
+  const now = new Date();
+  const elapsed = (now.getFullYear() - y) * 12 + (now.getMonth() - (mo - 1));
+  return Math.max(0, elapsed);
+}
+
+function currentYM(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// Équité (valeur du bien - capital restant dû) au mois "absoluteMonth" depuis l'achat
+function immoEquiteAt(prixBien: number, capitalEmprunte: number, tauxPret: number, tauxAppre: number, dureePret: number, absoluteMonth: number): number {
   const r = tauxPret / 100 / 12;
   const n = dureePret * 12;
   const ra = tauxAppre / 100 / 12;
-  const pts: number[] = [apport];
+  const valeurBien = prixBien * Math.pow(1 + ra, absoluteMonth);
+  let capitalRestant: number;
+  if (absoluteMonth >= n) {
+    capitalRestant = 0;
+  } else if (r > 0) {
+    capitalRestant = capitalEmprunte * (Math.pow(1 + r, n) - Math.pow(1 + r, absoluteMonth)) / (Math.pow(1 + r, n) - 1);
+  } else {
+    capitalRestant = capitalEmprunte - (capitalEmprunte / n) * absoluteMonth;
+  }
+  return Math.max(0, valeurBien - capitalRestant);
+}
+
+// monthsElapsed: mois déjà écoulés depuis l'achat réel (dateAchat), pour partir de la bonne équité "aujourd'hui"
+function projectImmobilier(apport: number, prixBien: number, tauxPret: number, tauxAppre: number, dureePret: number, years: number, monthsElapsed: number = 0): number[] {
+  const capital = prixBien - apport;
+  const pts: number[] = [immoEquiteAt(prixBien, capital, tauxPret, tauxAppre, dureePret, monthsElapsed)];
   for (let m = 1; m <= years * 12; m++) {
-    const valeurBien = prixBien * Math.pow(1 + ra, m);
-    let capitalRestant: number;
-    if (m >= n) {
-      capitalRestant = 0;
-    } else if (r > 0) {
-      capitalRestant = capital * (Math.pow(1 + r, n) - Math.pow(1 + r, m)) / (Math.pow(1 + r, n) - 1);
-    } else {
-      capitalRestant = capital - (capital / n) * m;
-    }
-    pts.push(Math.max(0, valeurBien - capitalRestant));
+    pts.push(immoEquiteAt(prixBien, capital, tauxPret, tauxAppre, dureePret, monthsElapsed + m));
   }
   return pts;
 }
@@ -202,12 +223,20 @@ function projectCagnotte(
   const schedule = opts?.noSavings ? [] : (c.mensuelSchedule ?? []);
   const apports = c.apports ?? [];
   if (c.type === "immobilier" && c.prixBien !== undefined && c.tauxPret !== undefined && c.dureePret !== undefined) {
-    return projectImmobilier(c.montant, c.prixBien, c.tauxPret, taux, c.dureePret, years);
+    return projectImmobilier(c.montant, c.prixBien, c.tauxPret, taux, c.dureePret, years, monthsSince(c.dateAchat));
   }
   if (schedule.length || apports.length) {
     return projectMonthlyWithSchedule(c.montant, mensuel, schedule, taux, years, apports);
   }
   return projectMonthly(c.montant, mensuel, taux, years);
+}
+
+// Valeur nette "aujourd'hui" d'une cagnotte (équité réelle pour l'immobilier, montant saisi sinon)
+function getCurrentValeur(c: Cagnotte): number {
+  if (c.type === "immobilier" && c.prixBien !== undefined && c.tauxPret !== undefined && c.dureePret !== undefined) {
+    return projectImmobilier(c.montant, c.prixBien, c.tauxPret, c.taux, c.dureePret, 0, monthsSince(c.dateAchat))[0];
+  }
+  return c.montant;
 }
 
 function fmt(n: number): string {
@@ -711,7 +740,7 @@ function CryptoForm({
 
 function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
   const [type, setType] = useState<"epargne" | "immobilier" | "crypto">("epargne");
-  const [draft, setDraft] = useState({ name: "", montant: 0, mensuel: 0, taux: 5, prixBien: 300000, tauxPret: 3.5, dureePret: 20 });
+  const [draft, setDraft] = useState({ name: "", montant: 0, mensuel: 0, taux: 5, prixBien: 300000, tauxPret: 3.5, dureePret: 20, dateAchat: currentYM() });
   const [holdings, setHoldings] = useState<CryptoHolding[]>([]);
   const [schedules, setSchedules] = useState<MensuelSchedule[]>([]);
   const [apports, setApports] = useState<Apport[]>([]);
@@ -719,7 +748,7 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
   useMemo(() => {
     if (open) {
       setType("epargne");
-      setDraft({ name: "", montant: 0, mensuel: 0, taux: 5, prixBien: 300000, tauxPret: 3.5, dureePret: 20 });
+      setDraft({ name: "", montant: 0, mensuel: 0, taux: 5, prixBien: 300000, tauxPret: 3.5, dureePret: 20, dateAchat: currentYM() });
       setHoldings([]);
       setSchedules([]);
       setApports([]);
@@ -732,6 +761,10 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
 
   const mensualiteCalc = type === "immobilier"
     ? computeMensualite(draft.prixBien - draft.montant, draft.tauxPret, draft.dureePret)
+    : null;
+
+  const equiteActuelle = type === "immobilier"
+    ? projectImmobilier(draft.montant, draft.prixBien, draft.tauxPret, draft.taux, draft.dureePret, 0, monthsSince(draft.dateAchat))[0]
     : null;
 
   const totalCrypto = holdings.reduce((s, h) => s + h.quantity * (h.price ?? 0), 0);
@@ -747,6 +780,7 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
         name: draft.name || "Résidence principale", type: "immobilier",
         montant: draft.montant, mensuel, taux: draft.taux,
         prixBien: draft.prixBien, tauxPret: draft.tauxPret, dureePret: draft.dureePret,
+        dateAchat: draft.dateAchat,
       });
     } else {
       onAdd({
@@ -790,9 +824,13 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
 
           {type === "immobilier" && (
             <>
+              <div className="space-y-1.5">
+                <Label>Date d'achat</Label>
+                <Input type="month" value={draft.dateAchat} max={currentYM()} onChange={(e) => setDraft((p) => ({ ...p, dateAchat: e.target.value }))} />
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <Label>Prix du bien (€)</Label>
+                  <Label>Prix du bien à l'achat (€)</Label>
                   <NumberInput value={draft.prixBien} min={0} onChange={(v) => setDraft((p) => ({ ...p, prixBien: v }))} />
                 </div>
                 <div className="space-y-1.5">
@@ -823,6 +861,12 @@ function AddDialog({ open, onOpenChange, onAdd }: AddDialogProps) {
                 <div className="rounded-md bg-muted px-3 py-2 flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">Mensualité calculée</span>
                   <span className="text-sm font-semibold">{fmt(mensualiteCalc)}/mois</span>
+                </div>
+              )}
+              {equiteActuelle !== null && draft.dateAchat !== currentYM() && (
+                <div className="rounded-md bg-muted px-3 py-2 flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Équité actuelle estimée</span>
+                  <span className="text-sm font-semibold">{fmt(equiteActuelle)}</span>
                 </div>
               )}
             </>
@@ -906,6 +950,10 @@ function CagnotteDialog({ cagnotte, color, canDelete, open, onOpenChange, onSave
     ? computeMensualite(draft.prixBien - draft.montant, draft.tauxPret, draft.dureePret)
     : null;
 
+  const equiteActuelle = isImmo && draft.prixBien !== undefined && draft.tauxPret !== undefined && draft.dureePret !== undefined
+    ? projectImmobilier(draft.montant, draft.prixBien, draft.tauxPret, draft.taux, draft.dureePret, 0, monthsSince(draft.dateAchat))[0]
+    : null;
+
   const dialogTitle = isImmo ? "Modifier le bien immobilier" : isCrypto ? "Modifier le portefeuille crypto" : "Modifier le placement";
 
   return (
@@ -925,9 +973,13 @@ function CagnotteDialog({ cagnotte, color, canDelete, open, onOpenChange, onSave
 
           {isImmo && (
             <>
+              <div className="space-y-1.5">
+                <Label>Date d'achat</Label>
+                <Input type="month" value={draft.dateAchat ?? currentYM()} max={currentYM()} onChange={(e) => setDraft((p) => p ? { ...p, dateAchat: e.target.value } : p)} />
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <Label>Prix du bien (€)</Label>
+                  <Label>Prix du bien à l'achat (€)</Label>
                   <NumberInput value={draft.prixBien ?? 0} min={0} onChange={(v) => setDraft((p) => p ? { ...p, prixBien: v } : p)} />
                 </div>
                 <div className="space-y-1.5">
@@ -958,6 +1010,12 @@ function CagnotteDialog({ cagnotte, color, canDelete, open, onOpenChange, onSave
                 <div className="rounded-md bg-muted px-3 py-2 flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">Mensualité calculée</span>
                   <span className="text-sm font-semibold">{fmt(mensualiteCalc)}/mois</span>
+                </div>
+              )}
+              {equiteActuelle !== null && (
+                <div className="rounded-md bg-muted px-3 py-2 flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">Équité actuelle estimée</span>
+                  <span className="text-sm font-semibold">{fmt(equiteActuelle)}</span>
                 </div>
               )}
             </>
@@ -1282,7 +1340,7 @@ export default function Dashboard() {
     return allPoints.filter((p, i) => i % step === 0 || i === allPoints.length - 1 || !!p.changeLabel);
   }, [cagnottes, years, currentYear, currentMonth]);
 
-  const totalNow = visibleCagnottes.reduce((s, c) => s + c.montant, 0);
+  const totalNow = visibleCagnottes.reduce((s, c) => s + getCurrentValeur(c), 0);
   const lastRow = chartData[chartData.length - 1];
   const totalFuture = lastRow ? visibleCagnottes.reduce((s, c) => s + ((lastRow[c.name] as number) || 0), 0) : 0;
   const mensuelTotal = visibleCagnottes.filter((c) => c.type !== "immobilier").reduce((s, c) => s + getCurrentMensuel(c), 0);
@@ -1295,7 +1353,7 @@ export default function Dashboard() {
       const ym = addMonths(currentYear, currentMonth, m);
       let total = 0;
       visibleCagnottes.forEach((c) => {
-        const pts = projectMonthlyWithSchedule(c.montant, c.mensuel, c.mensuelSchedule ?? [], c.taux, Math.ceil(m / 12) + 1, c.apports ?? []);
+        const pts = projectCagnotte(c, Math.ceil(m / 12) + 1);
         total += pts[m] ?? pts[pts.length - 1];
       });
       if (total >= fireCapital) {
@@ -1389,7 +1447,7 @@ export default function Dashboard() {
                   {/* title + amount */}
                   <button onClick={() => openEdit(c.id)} className="flex-1 flex items-center justify-between min-w-0 text-left gap-2">
                     <span className="font-bold tracking-tight text-foreground truncate">{c.name}</span>
-                    <span className="text-sm text-muted-foreground flex-shrink-0">{fmt(c.montant)}</span>
+                    <span className="text-sm text-muted-foreground flex-shrink-0">{fmt(getCurrentValeur(c))}</span>
                   </button>
                   {/* visibility toggle */}
                   <button

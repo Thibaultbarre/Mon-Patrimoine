@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import * as SliderPrimitive from "@radix-ui/react-slider";
 
 interface CryptoHolding {
   id: string;
@@ -62,7 +63,8 @@ const PRESET_COLORS = [
 function getColor(c: { color?: string }, idx: number): string {
   return c.color ?? PALETTE[idx % PALETTE.length];
 }
-const YEAR_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40, 45, 50];
+const MAX_YEARS = 60;
+const YEAR_TICKS = [1, 10, 20, 30, 40, 50, 60];
 const MONTHS_FR = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
 
 const TAUX_PRESETS = {
@@ -364,30 +366,36 @@ function TauxField({
   );
 }
 
-function YearDropdown({ value, onChange, options }: { value: number; onChange: (y: number) => void; options: number[] }) {
-  const [open, setOpen] = useState(false);
+function YearSlider({ value, onChange }: { value: number; onChange: (y: number) => void }) {
   return (
-    <div className="relative inline-block">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="inline-flex items-center gap-0.5 font-semibold text-foreground hover:text-muted-foreground transition-colors duration-150"
+    <div className="pt-4">
+      <SliderPrimitive.Root
+        min={1}
+        max={MAX_YEARS}
+        step={1}
+        value={[value]}
+        onValueChange={([v]) => onChange(v)}
+        className="relative flex w-full touch-none select-none items-center h-5"
+        aria-label="Horizon de projection"
       >
-        {value} an{value > 1 ? "s" : ""}
-        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 mt-1 z-50 rounded-md border bg-card shadow-lg py-1 min-w-[110px] max-h-72 overflow-y-auto" style={{ backgroundColor: "hsl(var(--card))" }}>
-            {options.map((y) => (
-              <button key={y} onClick={() => { onChange(y); setOpen(false); }}
-                className={`w-full px-3 py-1.5 text-left text-sm hover:bg-accent transition-colors ${y === value ? "font-semibold text-primary" : "text-foreground"}`}>
-                {y} an{y > 1 ? "s" : ""}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+        <SliderPrimitive.Track className="relative h-1.5 w-full grow overflow-hidden rounded-full bg-border">
+          <SliderPrimitive.Range className="absolute h-full bg-primary" />
+        </SliderPrimitive.Track>
+        <SliderPrimitive.Thumb className="block h-5 w-5 rounded-full border-2 border-primary bg-background shadow-sm transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-grab active:cursor-grabbing" />
+      </SliderPrimitive.Root>
+      <div className="relative h-4 mt-1.5 text-[11px] text-muted-foreground">
+        {YEAR_TICKS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => onChange(t)}
+            className={`absolute -translate-x-1/2 hover:text-foreground transition-colors ${t === value ? "text-foreground font-semibold" : ""}`}
+            style={{ left: `${((t - 1) / (MAX_YEARS - 1)) * 100}%` }}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1551,7 +1559,8 @@ export default function Dashboard() {
                 <div>
                   <div className="flex items-center gap-1.5 text-sm text-muted-foreground mb-1">
                     {activeChart === "projection" ? "Projection dans" : "Épargne mensuelle dans"}
-                    <YearDropdown value={years} onChange={setYears} options={YEAR_OPTIONS} />
+                    <span className="font-semibold text-foreground tabular-nums">{years} an{years > 1 ? "s" : ""}</span>
+                    <span className="tabular-nums">· {currentYear + years}</span>
                   </div>
                   <p className="text-2xl font-bold text-primary">
                     {activeChart === "projection"
@@ -1572,6 +1581,7 @@ export default function Dashboard() {
                   ))}
                 </div>
               </div>
+              <YearSlider value={years} onChange={setYears} />
               {activeChart === "projection" && (
                 <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-3 text-xs">
                   <label className="flex items-center gap-2 cursor-pointer select-none">

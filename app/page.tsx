@@ -62,7 +62,7 @@ const PRESET_COLORS = [
 function getColor(c: { color?: string }, idx: number): string {
   return c.color ?? PALETTE[idx % PALETTE.length];
 }
-const YEAR_OPTIONS = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 40];
+const YEAR_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40, 45, 50];
 const MONTHS_FR = ["janvier","février","mars","avril","mai","juin","juillet","août","septembre","octobre","novembre","décembre"];
 
 const TAUX_PRESETS = {
@@ -378,7 +378,7 @@ function YearDropdown({ value, onChange, options }: { value: number; onChange: (
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 mt-1 z-50 rounded-md border bg-card shadow-lg py-1 min-w-[110px]" style={{ backgroundColor: "hsl(var(--card))" }}>
+          <div className="absolute top-full left-0 mt-1 z-50 rounded-md border bg-card shadow-lg py-1 min-w-[110px] max-h-72 overflow-y-auto" style={{ backgroundColor: "hsl(var(--card))" }}>
             {options.map((y) => (
               <button key={y} onClick={() => { onChange(y); setOpen(false); }}
                 className={`w-full px-3 py-1.5 text-left text-sm hover:bg-accent transition-colors ${y === value ? "font-semibold text-primary" : "text-foreground"}`}>
